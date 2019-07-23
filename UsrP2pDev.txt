@@ -1,0 +1,119 @@
+
+int CProtocol::UsrP2pDev(CPeer *pPeer)
+{
+	//addr(2B)|size(2B)|code(1B)|offset(2B)|vallen(1B)|namelen(1B)|name(xB)|maclen(1B)|mac(12B)|crc(2B)
+	int nIp = pPeer->GetIp();
+	int nPort = pPeer->GetPort();
+	char *pBuf = pPeer->GetData();
+	struct sockaddr_in saFrom;
+	pPeer->GetAddr(&saFrom);
+	unsigned short usAddr = 0;
+	((char *)&usAddr)[0] = pBuf[1];
+	((char *)&usAddr)[1] = pBuf[0];
+	unsigned short usSize = 0;
+	((char *)&usSize)[0] = pBuf[3];
+	((char *)&usSize)[1] = pBuf[2];
+	unsigned char ucCode = pBuf[4];
+	unsigned short usOffset = 0;
+	((char *)&usOffset)[0] = pBuf[6];
+	((char *)&usOffset)[1] = pBuf[5];
+	unsigned char ucVallen = pBuf[7];
+	char *pVal = pBuf + 8;
+	unsigned char nNameLen = pVal[0];
+	char szParam[CMD_SIZE] = {0};
+	char szLog[BUF_SIZE] = {0};
+	if(nNameLen < NAME_SIZE)
+	{
+		char szName[NAME_SIZE] = {0};
+		memcpy(szName, pVal+1, nNameLen);
+		unsigned char nMacLen = pVal[1+nNameLen];
+		if(nMacLen <= MAC_SIZE)
+		{
+			char szMac[MAC_SIZE] = {0};
+			memset(szMac, 0, MAC_SIZE);
+			memcpy(szMac, pVal+1+nNameLen+1, nMacLen);
+			//char *sMac = CUtil::Data2String(szMac, nMacLen);
+			sprintf_s(szLog, BUF_SIZE, "CProtocol::UsrP2pDev() name=%s mac=%s\n", szName, szMac);
+			PrintLog(szLog);
+			CUser *pUser = m_pUserMgr->GetUser(szName);
+			CDevice *pDev = m_pDevMgr->GetDev(szMac);
+			//delete sMac;
+			sprintf_s(szLog, BUF_SIZE, "CProtocol::UsrP2pDev() pUser=%p pDev=%p\n", pUser, pDev);
+			PrintLog(szLog);
+			if((pUser != NULL) && (pDev != NULL) && (strcmp(pDev->GetOwner(), szName) == 0))
+			{
+				//send data to device
+				//szParam = usriplen|usrip|usrportlen|usrport
+				memset(szParam, 0, CMD_SIZE);
+				int nUsrIpLen = 4;
+				int nUsrPortLen = 4;
+				int nParamCnt = 1+nUsrIpLen+1+nUsrPortLen;
+				szParam[0] = nUsrIpLen;
+				int nUsrIp = pUser->GetIp();
+				unsigned char szUsrIp[4] = {0};
+				CUtil::Int2Bytes(nUsrIp, szUsrIp);
+				memcpy(szParam+1, szUsrIp, nUsrIpLen);
+
+				szParam[1+nUsrIpLen] = nUsrPortLen;
+				int nUsrPort = pUser->GetPort();
+				unsigned char szUsrPort[4] = {0};
+				CUtil::Int2Bytes(nUsrPort, szUsrPort);
+				memcpy(szParam+1+nUsrIpLen+1, szUsrPort, nUsrPortLen);
+
+				char szCmd[CMD_SIZE] = {0};
+				int nSize = DataGenerate(usAddr, ucCode, DEV_CON_USR, szParam, nParamCnt, szCmd, CMD_SIZE);
+				char *pStr = CUtil::Data2String(szCmd, nSize);
+				sprintf_s(szLog, BUF_SIZE, "CProtocol::UsrP2pDev() sendto device nSize=%d cmd=%s\n", nSize, pStr);
+				delete pStr;
+				PrintLog(szLog);
+				CNode *pDevNode = new CNode();
+				CPeer *pDevPeer = new CPeer();
+				pDevNode->m_pObject = (CBase *)pDevPeer;
+				pDevPeer->SetData(szCmd, nSize);
+				pDevPeer->SetIp(pDev->GetIp());
+				pDevPeer->SetPort(pDev->GetPort());
+				pDev->GetAddr(&saFrom);
+				pDevPeer->SetAddr(&saFrom);
+				m_pSendQueue->Push(pDevNode);
+
+				//send data to user
+				//szParam = maclen|mac|deviplen|devip|devportlen|devport
+				int nDevIpLen = 4;
+				int nDevPortLen = 4;
+				nParamCnt = 1+nMacLen+1+nDevIpLen+1+nDevPortLen;
+				memset(szParam, 0, CMD_SIZE);
+				szParam[0] = nMacLen;
+				memcpy(szParam+1, szMac, nMacLen);
+
+				szParam[1+nMacLen] = nDevIpLen;
+				int nDevIp = pUser->GetIp();
+				unsigned char szDevIp[4] = {0};
+				CUtil::Int2Bytes(nDevIp, szDevIp);
+				memcpy(szParam+1+nMacLen+1, szDevIp, nDevIpLen);
+
+				szParam[1+nMacLen+1+nDevIpLen] = nDevPortLen;
+				int nDevPort = pUser->GetPort();
+				unsigned char szDevPort[4] = {0};
+				CUtil::Int2Bytes(nDevPort, szDevPort);
+				memcpy(szParam+1+nMacLen+1+nDevIpLen+1, szDevPort, nDevPortLen);
+
+				memset(szCmd, 0, CMD_SIZE);
+				nSize = DataGenerate(usAddr, ucCode, USR_CON_DEV, szParam, nParamCnt, szCmd, CMD_SIZE);
+				pStr = CUtil::Data2String(szCmd, nSize);
+				sprintf_s(szLog, BUF_SIZE, "CProtocol::UsrP2pDev() sendto user nSize=%d cmd=%s\n", nSize, pStr);
+				delete pStr;
+				PrintLog(szLog);
+				CNode *pUsrNode = new CNode();
+				CPeer *pUsrPeer = new CPeer();
+				pUsrNode->m_pObject = (CBase *)pUsrPeer;
+				pUsrPeer->SetData(szCmd, nSize);
+				pUsrPeer->SetIp(pUser->GetIp());
+				pUsrPeer->SetPort(pUser->GetPort());
+				pUser->GetAddr(&saFrom);
+				pUsrPeer->SetAddr(&saFrom);
+				m_pSendQueue->Push(pUsrNode);
+			}
+		}
+	}
+	return 0;
+}
